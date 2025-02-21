@@ -1,0 +1,50 @@
+#!/bin/sh
+TMP=`mktemp`
+EPOCH_HOUR_AGO=$(( $(date +%s) - 3600 ))
+
+exit_unknown() {
+	msg="$1"
+
+	echo "${msg}"
+	exit 3
+}
+
+find_nagios_log() {
+	# Try to locate the nagios log, fallback to messages log
+	for log in /var/log/nagios/nagios.log /var/log/nagios3/nagios.log /var/spool/nagios/nagios.log \
+		/usr/local/nagios/var/nagios.log
+	do
+		if [ -e "${log}" ]; then
+			echo ${log}
+			return 0
+		fi
+	done
+	return 3
+}
+
+LOG=$(find_nagios_log) || exit_unknown "Unable to locate logfile for parsing"
+
+tail -n 1 ${LOG} &> ${TMP} || exit_unknown "Unable to parse logfile: $(cat ${TMP})"
+tail -n 2000 ${LOG} | \
+awk "BEGIN { FS=\"[\\\\[\\\\]]\" } \$2 > ${EPOCH_HOUR_AGO} {print \$0}" | \
+grep "Passive check result was received" | \
+grep -i "could not be found"  | \
+sed 's/.*Passive check result was received for service //' | \
+sed 's/, but the host could not be found.*//' | \
+sort | uniq > $TMP
+
+
+LINES=`cat $TMP | wc -l`
+PERFDATA="'ghost_services'=$LINES"
+if [ $LINES -gt 0 ]; then
+	echo "$LINES ghost services found in Nagios log files | $PERFDATA" 
+	echo ""
+	cat $TMP
+	rm -f $TMP
+	exit 1
+fi
+
+echo "No ghost services found in Nagios log files | $PERFDATA"
+rm -f $TMP
+exit 0
+
